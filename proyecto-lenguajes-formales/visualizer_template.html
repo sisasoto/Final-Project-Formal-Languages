@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<!--
+  visualizer_template.html - Plantilla del visualizador del Ítem 3
+  =================================================================
+  visualizer.py reemplaza la marca DATOS (más abajo) por los datos JSON
+  del árbol, del grafo de dependencias y del orden topológico, y guarda
+  el resultado como visualizer.html. No usa librerías externas: el dibujo
+  es SVG hecho a mano con JavaScript.
+
+  Qué se ve (Secciones 5.1.2, 5.2.1 y 5.2.2 del libro):
+    - el árbol de análisis; cada nodo con sus atributos (heredados a la
+      izquierda, sintetizados a la derecha, como en la Figura 5.7);
+    - las flechas del grafo de dependencias (u -> v: v usa a u);
+    - la evaluación paso a paso en el orden topológico.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDD visualizer</title>
+<style>
+  :root {
+    --fondo: #f6f7f9;
+    --panel: #ffffff;
+    --borde: #d8dce3;
+    --texto: #1f2430;
+    --suave: #6b7280;
+    --arbol: #b9c0cc;
+    --pendiente: #eef0f3;
+    --hecho: #dcf3e4;
+    --hecho-borde: #2f9e5b;
+    --actual: #ffe8a3;
+    --actual-borde: #d19a00;
+    --lexval: #e3efff;
+    --lexval-borde: #4a7fd6;
+    --ciclo: #fde2e2;
+    --ciclo-borde: #d64545;
+    --flecha: #8a93a3;
+    --flecha-hecha: #2f9e5b;
+    --flecha-actual: #d19a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--fondo); color: var(--texto);
+  }
+  header { padding: 14px 20px 6px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; color: var(--suave); font-size: 13px; }
+
+  .barra {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 8px 20px; position: sticky; top: 0; z-index: 2;
+    background: var(--fondo); border-bottom: 1px solid var(--borde);
+  }
+  .barra .separador { width: 1px; height: 24px; background: var(--borde); margin: 0 4px; }
+  button, select {
+    font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--borde); background: var(--panel); color: var(--texto); cursor: pointer;
+  }
+  button:hover:not(:disabled), select:hover { border-color: #9aa3b2; }
+  button:disabled { opacity: .4; cursor: default; }
+  label { font-size: 13px; display: flex; gap: 5px; align-items: center; cursor: pointer; }
+
+  .explicacion {
+    margin: 10px 20px 0; padding: 10px 14px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--borde); font-size: 14px; min-height: 42px;
+  }
+  .explicacion code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  .explicacion.circular { background: var(--ciclo); border-color: var(--ciclo-borde); }
+  .resultado { font-weight: 600; color: var(--hecho-borde); }
+
+  main { display: grid; grid-template-columns: 1fr 330px; gap: 14px; padding: 12px 20px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .lienzo {
+    background: var(--panel); border: 1px solid var(--borde); border-radius: 8px;
+    overflow: auto; max-height: calc(100vh - 190px); min-height: 300px;
+  }
+  .lateral { display: flex; flex-direction: column; gap: 12px; }
+  .caja { background: var(--panel); border: 1px solid var(--borde); border-radius: 8px; padding: 10px 12px; }
+  .caja h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--suave); }
+
+  ol.orden { margin: 0; padding-left: 30px; max-height: 45vh; overflow: auto;
+             font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  ol.orden li { padding: 2px 4px; border-radius: 4px; cursor: pointer; color: var(--suave); }
+  ol.orden li.hecho { color: var(--texto); }
+  ol.orden li.actual { background: var(--actual); color: var(--texto); }
+  ol.orden li .regla { color: var(--suave); }
+
+  .leyenda { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; font-size: 12px; align-items: center; }
+  .muestra { width: 34px; height: 16px; border-radius: 8px; border: 1.5px solid; }
+  pre.sdd { font-size: 11px; overflow: auto; max-height: 30vh; margin: 0; }
+  details summary { cursor: pointer; font-size: 13px; color: var(--suave); }
+
+  /* --- Dibujo SVG --- */
+  svg text { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .nodo-caja { fill: #fbfbfc; stroke: var(--borde); stroke-width: 1; }
+  .nodo-caja.interno { fill: #f4f6fa; }
+  .etiqueta { font-size: 13px; font-weight: 600; fill: var(--texto); }
+  .linea-arbol { stroke: var(--arbol); stroke-width: 1.5; }
+  .pastilla rect { stroke-width: 1.5; }
+  .pastilla text { font-size: 12px; fill: var(--texto); }
+  .pastilla.pendiente rect { fill: var(--pendiente); stroke: #c4c9d2; }
+  .pastilla.pendiente text { fill: var(--suave); }
+  .pastilla.hecho rect { fill: var(--hecho); stroke: var(--hecho-borde); }
+  .pastilla.actual rect { fill: var(--actual); stroke: var(--actual-borde); stroke-width: 2.5; }
+  .pastilla.lexval rect { fill: var(--lexval); stroke: var(--lexval-borde); }
+  .pastilla.ciclo rect { fill: var(--ciclo); stroke: var(--ciclo-borde); stroke-width: 2; }
+  .pastilla.heredado rect { stroke-dasharray: 4 2; }
+  .flecha { fill: none; stroke: var(--flecha); stroke-width: 1.2; opacity: .55; }
+  .flecha.hecha { stroke: var(--flecha-hecha); opacity: .8; }
+  .flecha.actual { stroke: var(--flecha-actual); stroke-width: 2.5; opacity: 1; }
+  .flecha.ciclo { stroke: var(--ciclo-borde); stroke-width: 2; opacity: 1; }
+  .sin-flechas .flecha:not(.actual) { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="titulo">SDD visualizer</h1>
+  <p>Parse tree, dependency graph (edge u → v means v uses u) and evaluation in topological order — Dragon book, Sections 5.1.2, 5.2.1, 5.2.2.</p>
+</header>
+
+<div class="barra">
+  <label>String <select id="selector"></select></label>
+  <span class="separador"></span>
+  <button id="b-inicio" title="First step (Home)">⏮</button>
+  <button id="b-atras" title="Previous step (←)">◀ Prev</button>
+  <button id="b-adelante" title="Next step (→)">Next ▶</button>
+  <button id="b-final" title="Last step (End)">⏭</button>
+  <button id="b-play" title="Play / pause (Space)">▶ Play</button>
+  <span class="separador"></span>
+  <label><input type="checkbox" id="c-flechas" checked> Show all edges</label>
+  <span class="separador"></span>
+  <button id="b-menos" title="Zoom out">−</button>
+  <button id="b-ajustar" title="Fit to width">Fit</button>
+  <button id="b-mas" title="Zoom in">+</button>
+</div>
+
+<div class="explicacion" id="explicacion"></div>
+
+<main>
+  <div class="lienzo" id="lienzo"></div>
+  <div class="lateral">
+    <div class="caja">
+      <h2>Evaluation order</h2>
+      <ol class="orden" id="orden"></ol>
+    </div>
+    <div class="caja">
+      <h2>Legend</h2>
+      <div class="leyenda">
+        <span class="muestra" style="background:var(--lexval);border-color:var(--lexval-borde)"></span><span>lexval (known from the start)</span>
+        <span class="muestra" style="background:var(--pendiente);border-color:#c4c9d2"></span><span>not computed yet</span>
+        <span class="muestra" style="background:var(--actual);border-color:var(--actual-borde)"></span><span>computed in this step</span>
+        <span class="muestra" style="background:var(--hecho);border-color:var(--hecho-borde)"></span><span>already computed</span>
+        <span class="muestra" style="background:var(--ciclo);border-color:var(--ciclo-borde)"></span><span>could not be ordered (cycle)</span>
+        <span class="muestra" style="background:#fff;border-color:#888;border-style:dashed"></span><span>dashed border = inherited</span>
+      </div>
+    </div>
+    <div class="caja">
+      <details><summary>SDD (grammar, attributes, rules)</summary><pre class="sdd" id="sdd"></pre></details>
+    </div>
+  </div>
+</main>
+
+<script>
+// ---------------------------------------------------------------------
+// Datos que escribe visualizer.py (no editar esta línea a mano).
+// ---------------------------------------------------------------------
+const DATOS = /*__DATOS__*/null;
+
+// Medidas del dibujo (en píxeles).
+const ANCHO_LETRA = 7.3;    // ancho de una letra de la fuente monoespaciada
+const ALTO_PASTILLA = 20;   // "pastilla" = el óvalo de un atributo, ej. d=1
+const SEPARACION = 16;      // espacio horizontal entre subárboles
+const ALTO_NIVEL = 96;      // distancia vertical entre niveles del árbol
+const MARGEN = 30;
+
+const NS = "http://www.w3.org/2000/svg";
+let caso = null;       // el caso (cadena) que se está mostrando
+let paso = 0;          // cuántos atributos ya se calcularon (0 .. orden.length)
+let zoom = 1;
+let reproduciendo = null;
+let anchoSVG = 0, altoSVG = 0;
+let pastillas = {};    // vértice "4.d" -> elemento <g> de su pastilla
+let flechasSVG = [];   // [{u, v, elemento}]
+
+function crear(tipo, atributos, padre) {
+  const e = document.createElementNS(NS, tipo);
+  for (const k in atributos) e.setAttribute(k, atributos[k]);
+  if (padre) padre.appendChild(e);
+  return e;
+}
+
+// Texto que se ve dentro de la pastilla con el valor final, para medir.
+function textoFinal(v) {
+  const info = caso.vertices[v];
+  return info.valor === null ? info.atributo : info.atributo + "=" + info.valor;
+}
+function anchoPastilla(v) { return textoFinal(v).length * ANCHO_LETRA + 14; }
+
+// ---------------------------------------------------------------------
+// 1. Posiciones del árbol
+//    Cada subárbol ocupa un ancho = max(ancho de su caja, suma de los
+//    anchos de los hijos). Los hijos se ponen uno al lado del otro y el
+//    padre queda centrado encima de ellos.
+// ---------------------------------------------------------------------
+function calcularPosiciones() {
+  const nodos = {};
+  for (const n of caso.nodos) nodos[n.id] = n;
+
+  for (const n of caso.nodos) {
+    n.etiqueta = (n.simbolo === "e" && n.hijos.length === 0 && n.atributos.length === 0)
+                 ? "ε" : n.simbolo + "#" + n.id;
+    let anchoAtributos = 0;
+    for (const a of n.atributos) anchoAtributos += anchoPastilla(n.id + "." + a) + 4;
+    n.ancho = Math.max(n.etiqueta.length * 8.5 + 18, anchoAtributos + 10);
+    n.alto = n.atributos.length > 0 ? 24 + ALTO_PASTILLA + 8 : 26;
+  }
+
+  // Ancho de cada subárbol (de las hojas hacia la raíz: recorrido al revés
+  // del preorden, así cada hijo se calcula antes que su padre).
+  for (let i = caso.nodos.length - 1; i >= 0; i--) {
+    const n = caso.nodos[i];
+    let suma = 0;
+    for (const h of n.hijos) suma += nodos[h].anchoSubarbol;
+    suma += SEPARACION * Math.max(0, n.hijos.length - 1);
+    n.anchoHijos = suma;
+    n.anchoSubarbol = Math.max(n.ancho, suma);
+  }
+
+  // Posición x, y (de la raíz hacia las hojas: preorden).
+  const raiz = caso.nodos[0];
+  raiz.izquierda = MARGEN; raiz.nivel = 0;
+  let maxNivel = 0;
+  for (const n of caso.nodos) {
+    n.x = n.izquierda + n.anchoSubarbol / 2;           // centro de la caja
+    n.y = MARGEN + 20 + n.nivel * ALTO_NIVEL;          // arriba de la caja
+    maxNivel = Math.max(maxNivel, n.nivel);
+    let x = n.izquierda + (n.anchoSubarbol - n.anchoHijos) / 2;
+    for (const h of n.hijos) {
+      nodos[h].izquierda = x;
+      nodos[h].nivel = n.nivel + 1;
+      x += nodos[h].anchoSubarbol + SEPARACION;
+    }
+  }
+  anchoSVG = raiz.anchoSubarbol + 2 * MARGEN;
+  altoSVG = MARGEN * 2 + 20 + maxNivel * ALTO_NIVEL + 60;
+  return nodos;
+}
+
+// ---------------------------------------------------------------------
+// 2. Dibujo: líneas del árbol, cajas, flechas del grafo y pastillas.
+// ---------------------------------------------------------------------
+function dibujar() {
+  const nodos = calcularPosiciones();
+  const lienzo = document.getElementById("lienzo");
+  lienzo.innerHTML = "";
+  const svg = crear("svg", { viewBox: "0 0 " + anchoSVG + " " + altoSVG }, lienzo);
+  svg.id = "dibujo";
+
+  // Puntas de flecha (una por color).
+  const defs = crear("defs", {}, svg);
+  for (const [id, color] of [["p-normal", "var(--flecha)"], ["p-hecha", "var(--flecha-hecha)"],
+                             ["p-actual", "var(--flecha-actual)"], ["p-ciclo", "var(--ciclo-borde)"]]) {
+    const m = crear("marker", { id: id, viewBox: "0 0 10 10", refX: 9, refY: 5,
+                                markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, defs);
+    crear("path", { d: "M0,0 L10,5 L0,10 z", fill: color }, m);
+  }
+
+  const capaLineas = crear("g", {}, svg);
+  const capaCajas = crear("g", {}, svg);
+  const capaFlechas = crear("g", {}, svg);
+  const capaPastillas = crear("g", {}, svg);
+
+  pastillas = {};
+  const centro = {};   // vértice -> {x, y} centro de su pastilla
+
+  for (const n of caso.nodos) {
+    // Línea del padre a cada hijo.
+    for (const h of n.hijos) {
+      const hijo = nodos[h];
+      crear("line", { x1: n.x, y1: n.y + n.alto, x2: hijo.x, y2: hijo.y, class: "linea-arbol" }, capaLineas);
+    }
+    // Caja del nodo.
+    const caja = crear("rect", { x: n.x - n.ancho / 2, y: n.y, width: n.ancho, height: n.alto, rx: 7,
+                                 class: "nodo-caja" + (n.produccion ? " interno" : "") }, capaCajas);
+    crear("title", {}, caja).textContent = n.produccion ? "production: " + n.produccion : "leaf";
+    const etiqueta = crear("text", { x: n.x, y: n.y + 17, "text-anchor": "middle", class: "etiqueta" }, capaPastillas);
+    etiqueta.textContent = n.etiqueta;
+
+    // Pastillas de los atributos, en fila debajo de la etiqueta.
+    let total = 0;
+    for (const a of n.atributos) total += anchoPastilla(n.id + "." + a) + 4;
+    let x = n.x - (total - 4) / 2;
+    const y = n.y + 24;
+    for (const a of n.atributos) {
+      const v = n.id + "." + a;
+      const w = anchoPastilla(v);
+      const g = crear("g", { class: "pastilla" }, capaPastillas);
+      crear("rect", { x: x, y: y, width: w, height: ALTO_PASTILLA, rx: ALTO_PASTILLA / 2 }, g);
+      const t = crear("text", { x: x + w / 2, y: y + 14, "text-anchor": "middle" }, g);
+      const info = caso.vertices[v];
+      crear("title", {}, g).textContent = info.nombre + " (" + info.tipo + ")\nrule: " + info.regla;
+      g.dataset.v = v;
+      g.textoEl = t;
+      if (info.tipo === "inherited") g.classList.add("heredado");
+      pastillas[v] = g;
+      centro[v] = { x: x + w / 2, y: y + ALTO_PASTILLA / 2 };
+      x += w + 4;
+    }
+  }
+
+  // Flechas del grafo de dependencias: de la pastilla u a la pastilla v.
+  flechasSVG = [];
+  const medio = ALTO_PASTILLA / 2;
+  for (const [u, v] of caso.flechas) {
+    const a = centro[u], b = centro[v];
+    let d;
+    if (Math.abs(a.y - b.y) < 1) {
+      // Mismo nivel (mismo nodo o hermanos): un arco por debajo, para no
+      // tapar la etiqueta del nodo.
+      const alto = Math.min(40, 14 + Math.abs(a.x - b.x) / 4);
+      d = `M${a.x},${a.y + medio} C${a.x},${a.y + medio + alto} ${b.x},${b.y + medio + alto} ${b.x},${b.y + medio}`;
+    } else if (a.y < b.y) {
+      // u está arriba (ej. un heredado que baja del padre al hijo).
+      const y1 = a.y + medio, y2 = b.y - medio, m = (y2 - y1) / 2;
+      d = `M${a.x},${y1} C${a.x},${y1 + m} ${b.x},${y2 - m} ${b.x},${y2}`;
+    } else {
+      // u está abajo (ej. un sintetizado que sube del hijo al padre).
+      const y1 = a.y - medio, y2 = b.y + medio, m = (y1 - y2) / 2;
+      d = `M${a.x},${y1} C${a.x},${y1 - m} ${b.x},${y2 + m} ${b.x},${y2}`;
+    }
+    const e = crear("path", { d: d, class: "flecha" }, capaFlechas);
+    flechasSVG.push({ u: u, v: v, elemento: e });
+  }
+
+  aplicarZoom();
+}
+
+// ---------------------------------------------------------------------
+// 3. Estado de un paso: qué atributos ya están calculados.
+// ---------------------------------------------------------------------
+function actualizar() {
+  const orden = caso.orden;
+  const posicion = {};                       // vértice -> índice en el orden
+  orden.forEach((v, i) => posicion[v] = i);
+  const actual = paso > 0 ? orden[paso - 1] : null;
+  const cicloSet = new Set(caso.no_ordenados);
+
+  function estado(v) {
+    if (caso.vertices[v].tipo === "lexval") return "lexval";
+    if (cicloSet.has(v)) return "ciclo";
+    if (v === actual) return "actual";
+    if (v in posicion && posicion[v] < paso) return "hecho";
+    return "pendiente";
+  }
+
+  for (const v in pastillas) {
+    const g = pastillas[v];
+    const e = estado(v);
+    g.classList.remove("pendiente", "hecho", "actual", "lexval", "ciclo");
+    g.classList.add(e);
+    const info = caso.vertices[v];
+    const conocido = (e === "lexval" || e === "hecho" || e === "actual");
+    g.textoEl.textContent = conocido ? info.atributo + "=" + info.valor : info.atributo;
+  }
+
+  for (const f of flechasSVG) {
+    f.elemento.classList.remove("hecha", "actual", "ciclo");
+    let punta = "p-normal";
+    if (cicloSet.has(f.u) && cicloSet.has(f.v)) { f.elemento.classList.add("ciclo"); punta = "p-ciclo"; }
+    else if (f.v === actual) { f.elemento.classList.add("actual"); punta = "p-actual"; }
+    else if (estado(f.v) === "hecho") { f.elemento.classList.add("hecha"); punta = "p-hecha"; }
+    f.elemento.setAttribute("marker-end", "url(#" + punta + ")");
+  }
+  // La flecha del paso actual se dibuja encima de las demás.
+  for (const f of flechasSVG) if (f.v === actual) f.elemento.parentNode.appendChild(f.elemento);
+
+  // Lista del orden de evaluación.
+  const items = document.querySelectorAll("#orden li");
+  items.forEach((li, i) => {
+    li.className = i < paso - 1 ? "hecho" : (i === paso - 1 ? "actual" : "");
+  });
+  if (paso > 0 && items[paso - 1]) items[paso - 1].scrollIntoView({ block: "nearest" });
+
+  // Texto de explicación.
+  const caja = document.getElementById("explicacion");
+  caja.classList.toggle("circular", caso.circular);
+  if (caso.circular) {
+    const nombres = caso.no_ordenados.map(v => caso.vertices[v].nombre).join(", ");
+    caja.innerHTML = "<b>The SDD is circular:</b> the dependency graph has a cycle, so there is no " +
+                     "topological order (Section 5.2.2). Attributes that could not be ordered: <code>" +
+                     escapar(nombres) + "</code>";
+  } else if (paso === 0) {
+    caja.innerHTML = "Step 0 of " + orden.length + ": only the <code>lexval</code> of the leaves is known. " +
+                     "Press <b>Next</b> or the → key.";
+  } else {
+    const info = caso.vertices[actual];
+    const usa = caso.flechas.filter(([u, v]) => v === actual)
+                            .map(([u]) => caso.vertices[u].nombre + " = " + caso.vertices[u].valor);
+    let texto = "Step " + paso + " of " + orden.length + ": <code><b>" + escapar(info.nombre + " = " + info.valor) +
+                "</b></code> &nbsp;using the rule <code>" + escapar(info.regla) + "</code>";
+    texto += usa.length > 0 ? " &nbsp;with <code>" + escapar(usa.join(", ")) + "</code>."
+                            : " &nbsp;(it does not use other attributes).";
+    if (paso === orden.length) {
+      texto += "<br><span class='resultado'>Result: S." + escapar(DATOS.principal) + " = " +
+               escapar(caso.resultado) + "</span>";
+    }
+    caja.innerHTML = texto;
+  }
+
+  const fin = caso.circular ? 0 : orden.length;
+  document.getElementById("b-inicio").disabled = paso === 0;
+  document.getElementById("b-atras").disabled = paso === 0;
+  document.getElementById("b-adelante").disabled = paso >= fin;
+  document.getElementById("b-final").disabled = paso >= fin;
+  document.getElementById("b-play").disabled = fin === 0;
+}
+
+function escapar(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ---------------------------------------------------------------------
+// 4. Controles
+// ---------------------------------------------------------------------
+function irA(k) {
+  const fin = caso.circular ? 0 : caso.orden.length;
+  paso = Math.max(0, Math.min(fin, k));
+  actualizar();
+  if (paso >= fin) detener();
+}
+function detener() {
+  if (reproduciendo) clearInterval(reproduciendo);
+  reproduciendo = null;
+  document.getElementById("b-play").textContent = "▶ Play";
+}
+function reproducir() {
+  if (reproduciendo) { detener(); return; }
+  if (paso >= caso.orden.length) paso = 0;
+  document.getElementById("b-play").textContent = "⏸ Pause";
+  reproduciendo = setInterval(() => irA(paso + 1), 800);
+  irA(paso + 1);
+}
+function aplicarZoom() {
+  const svg = document.getElementById("dibujo");
+  if (!svg) return;
+  svg.setAttribute("width", anchoSVG * zoom);
+  svg.setAttribute("height", altoSVG * zoom);
+}
+function ajustar() {
+  const disponible = document.getElementById("lienzo").clientWidth - 4;
+  zoom = Math.min(1.2, disponible / anchoSVG);
+  aplicarZoom();
+}
+
+function mostrarCaso(i) {
+  detener();
+  caso = DATOS.casos[i];
+  paso = 0;
+  const lista = document.getElementById("orden");
+  lista.innerHTML = "";
+  caso.orden.forEach((v, k) => {
+    const info = caso.vertices[v];
+    const li = document.createElement("li");
+    li.innerHTML = escapar(info.nombre + " = " + info.valor) + " <span class='regla'>(" + escapar(info.regla) + ")</span>";
+    li.onclick = () => { detener(); irA(k + 1); };
+    lista.appendChild(li);
+  });
+  if (caso.circular) lista.innerHTML = "<li>(no order: the graph has a cycle)</li>";
+  dibujar();
+  ajustar();
+  actualizar();
+}
+
+function iniciar() {
+  document.getElementById("titulo").textContent = "SDD visualizer — " + DATOS.sdd;
+  document.getElementById("sdd").textContent = DATOS.reglas;
+  const selector = document.getElementById("selector");
+  DATOS.casos.forEach((c, i) => {
+    const op = document.createElement("option");
+    op.value = i;
+    op.textContent = c.cadena + (c.circular ? "   (circular)" : "   → S." + DATOS.principal + " = " + c.resultado);
+    selector.appendChild(op);
+  });
+  selector.onchange = () => mostrarCaso(Number(selector.value));
+
+  document.getElementById("b-inicio").onclick = () => { detener(); irA(0); };
+  document.getElementById("b-atras").onclick = () => { detener(); irA(paso - 1); };
+  document.getElementById("b-adelante").onclick = () => { detener(); irA(paso + 1); };
+  document.getElementById("b-final").onclick = () => { detener(); irA(caso.orden.length); };
+  document.getElementById("b-play").onclick = reproducir;
+  document.getElementById("b-mas").onclick = () => { zoom *= 1.25; aplicarZoom(); };
+  document.getElementById("b-menos").onclick = () => { zoom /= 1.25; aplicarZoom(); };
+  document.getElementById("b-ajustar").onclick = ajustar;
+  document.getElementById("c-flechas").onchange = (e) =>
+    document.getElementById("lienzo").classList.toggle("sin-flechas", !e.target.checked);
+
+  // Teclado: → siguiente, ← anterior, Inicio/Fin, espacio = play.
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowRight") { detener(); irA(paso + 1); e.preventDefault(); }
+    else if (e.key === "ArrowLeft") { detener(); irA(paso - 1); e.preventDefault(); }
+    else if (e.key === "Home") { detener(); irA(0); e.preventDefault(); }
+    else if (e.key === "End") { detener(); irA(caso.orden.length); e.preventDefault(); }
+    else if (e.key === " ") { reproducir(); e.preventDefault(); }
+  });
+
+  if (DATOS.casos.length === 0) {
+    document.getElementById("explicacion").textContent = "No strings were accepted, so there is nothing to show.";
+    return;
+  }
+  mostrarCaso(0);
+}
+
+iniciar();
+</script>
+</body>
+</html>

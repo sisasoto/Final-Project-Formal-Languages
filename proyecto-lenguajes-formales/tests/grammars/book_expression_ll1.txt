@@ -1,0 +1,16 @@
+5
+S -> TA
+A -> +TA e
+T -> FB
+B -> *FB e
+F -> (S) i
+B
+i+i*i
+(i+i)*i
+i+
+
+T
+i*(i+i)
+e
+
+Q
